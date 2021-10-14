@@ -8,6 +8,7 @@ let requestBidsMock;
 let pbGlobalMock;
 let pbEventsMock;
 let videoEventsMock;
+let adServerMock;
 
 function resetTestVars() {
   ortbParamsMock = {
@@ -17,29 +18,36 @@ function resetTestVars() {
   videoCoreMock = {
     registerProvider: sinon.spy(),
     onEvents: sinon.spy(),
-    getOrtbParams: () => ortbParamsMock
+    getOrtbParams: () => ortbParamsMock,
+    setAdTagUrl: sinon.spy()
   };
   getConfigMock = () => {};
   requestBidsMock = {
     before: sinon.spy()
   };
   pbGlobalMock = {
-    requestBids: requestBidsMock
+    requestBids: requestBidsMock,
+    getHighestCpmBids: sinon.spy()
   };
   pbEventsMock = {
     emit: sinon.spy(),
     on: sinon.spy()
   };
   videoEventsMock = [];
+  adServerMock = {
+    registerAdServer: sinon.spy(),
+    getAdTagUrl: sinon.spy()
+  };
 }
 
-let pbVideoFactory = (videoCore, getConfig, pbGlobal, pbEvents, videoEvents) => {
+let pbVideoFactory = (videoCore, getConfig, pbGlobal, pbEvents, videoEvents, adServer) => {
   const pbVideo = PbVideo(
     videoCore || videoCoreMock,
     getConfig || getConfigMock,
     pbGlobal || pbGlobalMock,
     pbEvents || pbEventsMock,
-    videoEvents || videoEventsMock
+    videoEvents || videoEventsMock,
+    adServer || adServerMock
   );
   pbVideo.init();
   return pbVideo;
@@ -87,6 +95,18 @@ describe('Prebid Video', function () {
         expect(pbEventsMock.emit.getCall(0).args[1]).to.be.equal(expectedPayload);
       });
     });
+
+    describe('Ad Server configuration', function() {
+      const test_vendor_code = 5;
+      const test_params = { test: 'params' };
+      providers[0].adServer = { vendorCode: test_vendor_code, params: test_params };
+
+      it('should register the ad server provider', function () {
+        expect(adServerMock.registerAdServer.calledOnce).to.be.true;
+        expect(adServerMock.registerAdServer.getCall(0).args[0]).to.be.equal(test_vendor_code);
+        expect(adServerMock.registerAdServer.getCall(0).args[1]).to.be.equal(test_params);
+      });
+    });
   });
 
   describe('Ad unit Enrichment', function () {
@@ -122,6 +142,75 @@ describe('Prebid Video', function () {
   });
 
   describe('Ad tag injection', function () {
-    // TODO: requires adServer to be implemented
+    let auctionEndCallback;
+    const pbEvents = {
+      emit: () => {},
+      on: (event, callback) => auctionEndCallback = callback
+    };
+
+    const expectedVendorCode = 5;
+    const expectedAdTag = 'test_tag';
+    const expectedAdUnitCode = 'expectedAdUnitcode';
+    const expectedDivId = 'expectedDivId';
+    const expectedAdUnit = {
+      code: expectedAdUnitCode,
+      video: {
+        divId: expectedDivId,
+        adServer: {
+          vendorCode: expectedVendorCode,
+          baseAdTagUrl: expectedAdTag
+        }
+      }
+    };
+    const auctionResults = { adUnits: [ expectedAdUnit, {} ] };
+
+    it('should request ad tag url from adServer when configured to use adServer', function () {
+      pbVideoFactory(null, null, null, pbEvents);
+
+      auctionEndCallback(auctionResults);
+      expect(adServerMock.getAdTagUrl.calledOnce).to.be.true;
+      expect(adServerMock.getAdTagUrl.getCall(0).args[0]).is.equal(expectedVendorCode);
+      expect(adServerMock.getAdTagUrl.getCall(0).args[1]).is.equal(expectedAdUnit);
+      expect(adServerMock.getAdTagUrl.getCall(0).args[2]).is.equal(expectedAdTag);
+
+      expect(videoCoreMock.setAdTagUrl.called).to.be.false;
+    });
+
+    it('should load ad tag when ad server return ad tag', function () {
+      const expectedAdTag = 'resulting ad tag';
+      const adServerCore = Object.assign({}, adServerMock, {
+        getAdTagUrl: () => expectedAdTag
+      });
+      pbVideoFactory(null, null, null, pbEvents, null, adServerCore);
+      auctionEndCallback(auctionResults);
+      expect(videoCoreMock.setAdTagUrl.calledOnce).to.be.true;
+      expect(videoCoreMock.setAdTagUrl.args[0][0]).to.be.equal(expectedAdTag);
+      expect(videoCoreMock.setAdTagUrl.args[0][1]).to.be.equal(expectedDivId);
+      expect(videoCoreMock.setAdTagUrl.args[0][2]).to.have.property('adUnitCode', expectedAdUnitCode);
+    });
+
+    it('should load ad tag from highest bid when ad server is not configured', function () {
+      const expectedVastUrl = 'expectedVastUrl';
+      const expectedVastXml = 'expectedVastXml';
+      const pbGlobal = Object.assign({}, pbGlobalMock, {
+        getHighestCpmBids: () => [{
+          vastUrl: expectedVastUrl,
+          vastXml: expectedVastXml
+        }, {}, {}, {}]
+      });
+      const expectedAdUnit = {
+        code: expectedAdUnitCode,
+        video: { divId: expectedDivId }
+      };
+      const auctionResults = { adUnits: [ expectedAdUnit, {} ] };
+
+      pbVideoFactory(null, null, pbGlobal, pbEvents);
+      auctionEndCallback(auctionResults);
+      expect(videoCoreMock.setAdTagUrl.calledOnce).to.be.true;
+      expect(videoCoreMock.setAdTagUrl.args[0][0]).to.be.equal(expectedVastUrl);
+      expect(videoCoreMock.setAdTagUrl.args[0][1]).to.be.equal(expectedDivId);
+      expect(videoCoreMock.setAdTagUrl.args[0][2]).to.have.property('adUnitCode', expectedAdUnitCode);
+      expect(videoCoreMock.setAdTagUrl.args[0][2]).to.have.property('adXml', expectedVastXml);
+    });
   });
 });

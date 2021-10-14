@@ -1,18 +1,20 @@
-import {config} from '../../src/config.js';
+import { config } from '../../src/config.js';
 import events from '../../src/events.js';
 import { allVideoEvents } from './constants/events.js';
 import CONSTANTS from '../../src/constants.json';
 import { videoCoreFactory } from './coreVideo.js';
+import { coreAdServerFactory } from './adServer.js';
 
 events.addEvents(allVideoEvents);
 
-export function PbVideo(videoCore_, getConfig_, pbGlobal_, pbEvents_, videoEvents_) {
+export function PbVideo(videoCore_, getConfig_, pbGlobal_, pbEvents_, videoEvents_, adServerCore_) {
   const videoCore = videoCore_;
   const getConfig = getConfig_;
   const pbGlobal = pbGlobal_;
   const requestBids = pbGlobal.requestBids;
   const pbEvents = pbEvents_;
   const videoEvents = videoEvents_;
+  const adServerCore = adServerCore_;
 
   function init() {
     getConfig('video', ({ video }) => {
@@ -23,17 +25,26 @@ export function PbVideo(videoCore_, getConfig_, pbGlobal_, pbEvents_, videoEvent
             pbEvents.emit(type, payload);
           }, provider.divId);
         } catch (e) {}
+
+        const adServerConfig = provider.adServer;
+        if (adServerConfig) {
+          adServerCore.registerAdServer(adServerConfig.vendorCode, adServerConfig.params);
+        }
       });
     });
 
     requestBids.before(enrichAdUnits, 40);
 
     pbEvents.on(CONSTANTS.EVENTS.AUCTION_END, function(auctionResult) {
-      // TODO: requires AdServer Module.
-      // get ad tag from adServer - auctionResult.winningBids
-      // coreVideo.setAdTagUrl(adTag, divId);
+      auctionResult.adUnits.forEach(adUnit => {
+        if (adUnit.video) {
+          renderWinningBid(adUnit);
+        }
+      });
     });
   }
+
+  return { init };
 
   function enrichAdUnits(nextFn, bidRequest) {
     const adUnits = bidRequest.adUnits || pbGlobal.adUnits || [];
@@ -44,14 +55,38 @@ export function PbVideo(videoCore_, getConfig_, pbGlobal_, pbEvents_, videoEvent
     return nextFn.call(this, bidRequest);
   }
 
-  return { init };
+  function renderWinningBid(adUnit) {
+    const videoConfig = adUnit.video;
+    const divId = videoConfig.divId;
+    const adServerConfig = videoConfig.adServer;
+    let adTagUrl;
+    if (adServerConfig) {
+      adTagUrl = adServerCore.getAdTagUrl(adServerConfig.vendorCode, adUnit, adServerConfig.baseAdTagUrl);
+    }
+
+    const adUnitCode = adUnit.code;
+    const options = { adUnitCode };
+    if (adTagUrl) {
+      videoCore.setAdTagUrl(adTagUrl, divId, options);
+      return;
+    }
+
+    const highestCpmBids = pbGlobal.getHighestCpmBids(adUnit.code);
+    const highestBid = highestCpmBids && highestCpmBids.shift();
+    if (!highestBid) {
+      return;
+    }
+
+    adTagUrl = highestBid.vastUrl;
+    options.adXml = highestBid.vastXml;
+    videoCore.setAdTagUrl(adTagUrl, divId, options);
+  }
 }
 
-function pbVideoFactory() {
+export function pbVideoFactory() {
   const videoCore = videoCoreFactory();
-  const pbVideo = PbVideo(videoCore, config.getConfig, $$PREBID_GLOBAL$$, events, allVideoEvents);
+  const adServerCore = coreAdServerFactory();
+  const pbVideo = PbVideo(videoCore, config.getConfig, $$PREBID_GLOBAL$$, events, allVideoEvents, adServerCore);
   pbVideo.init();
   return pbVideo;
 }
-
-pbVideoFactory();
