@@ -559,7 +559,7 @@ $$PREBID_GLOBAL$$.requestBids = hook('async', function ({ bidsBackHandler, timeo
   const s2sConfig = config.getConfig('s2sConfig');
 
   if (s2sConfig) {
-    _s2sConfigs = Array.isArray(config.s2sConfig) ? config.s2sConfig : [config.s2sConfig];
+    _s2sConfigs = Array.isArray(s2sConfig) ? s2sConfig : [s2sConfig];
   }
 
   _s2sConfigs.forEach(s2sConfig => {
